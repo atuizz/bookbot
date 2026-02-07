@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Environment variables
+.env
+
+# IDEs
+.vscode/
+.idea/
+.trae/
+*.swp
+
+# Docker volumes / Data
+meili_data/
+pg_data/
+redis_data/
+postgres_data/
+
+# OS
+.DS_Store
+Thumbs.db
