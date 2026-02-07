@@ -40,7 +40,7 @@
 1. **上传代码**:
    ```bash
    # 如果服务器已安装 git
-   git clone <你的仓库地址> bookbot
+   git clone https://github.com/atuizz/bookbot bookbot
    cd bookbot
    ```
 

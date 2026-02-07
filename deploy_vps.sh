@@ -29,6 +29,19 @@ error() {
     echo -e "${RED}[ERROR] $1${NC}"
 }
 
+# 0. 安装基础工具
+install_base_tools() {
+    info "检查并安装基础工具 (git, nano, curl)..."
+    if command -v apt-get &> /dev/null; then
+        apt-get update -y
+        apt-get install -y git nano curl
+    elif command -v yum &> /dev/null; then
+        yum install -y git nano curl
+    else
+        warn "未检测到 apt 或 yum，跳过基础工具安装，请手动确保安装了 git, nano, curl"
+    fi
+}
+
 # 1. 安装 Docker
 install_docker() {
     if ! command -v docker &> /dev/null; then
@@ -44,7 +57,13 @@ install_docker() {
     # 检查 docker compose
     if ! docker compose version &> /dev/null; then
         warn "Docker Compose 插件未找到，尝试安装..."
-        apt-get update && apt-get install -y docker-compose-plugin || warn "自动安装失败，请手动安装 docker-compose-plugin"
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y docker-compose-plugin
+        elif command -v yum &> /dev/null; then
+            yum install -y docker-compose-plugin
+        else
+            warn "自动安装失败，请手动安装 docker-compose-plugin"
+        fi
     fi
 }
 
@@ -52,7 +71,12 @@ install_docker() {
 configure_env() {
     if [ ! -f .env ]; then
         info "检测到首次运行，正在创建配置文件..."
-        cp .env.example .env
+        if [ -f .env.example ]; then
+            cp .env.example .env
+        else
+            warn "未找到 .env.example，将创建空白 .env"
+            touch .env
+        fi
 
         # 交互式输入 Token
         while true; do
@@ -63,17 +87,26 @@ configure_env() {
                 error "Bot Token 不能为空！"
             fi
         done
+        # 如果 .env 中没有 BOT_TOKEN= 行，追加一行
+        if ! grep -q "BOT_TOKEN=" .env; then
+            echo "BOT_TOKEN=" >> .env
+        fi
         sed -i "s/BOT_TOKEN=.*/BOT_TOKEN=$BOT_TOKEN/" .env
 
         # 自动生成 Meilisearch Key
         MEILI_KEY=$(openssl rand -hex 16)
         info "已自动生成 Meilisearch Master Key: $MEILI_KEY"
+        if ! grep -q "MEILI_MASTER_KEY=" .env; then
+            echo "MEILI_MASTER_KEY=" >> .env
+        fi
         sed -i "s/MEILI_MASTER_KEY=.*/MEILI_MASTER_KEY=$MEILI_KEY/" .env
 
         # 询问 Admin ID
         read -p "请输入管理员 Telegram ID (可选, 多个用逗号分隔): " ADMIN_IDS
         if [ ! -z "$ADMIN_IDS" ]; then
-            # 简单处理格式，假设用户输入的是数字
+             if ! grep -q "ADMIN_IDS=" .env; then
+                echo "ADMIN_IDS=" >> .env
+            fi
             sed -i "s/ADMIN_IDS=.*/ADMIN_IDS=[$ADMIN_IDS]/" .env
         fi
 
@@ -102,6 +135,10 @@ start_services() {
 update_code() {
     info "正在拉取最新代码..."
     git pull
+    if [ $? -ne 0 ]; then
+        error "Git pull 失败，请检查网络或 Git 配置"
+        return
+    fi
     info "正在重建并重启服务..."
     docker compose up -d --build
     info "✅ 更新完成！"
@@ -136,6 +173,7 @@ show_menu() {
 
     case $choice in
         1)
+            install_base_tools
             install_docker
             configure_env
             start_services
@@ -150,7 +188,11 @@ show_menu() {
             stop_services
             ;;
         5)
-            nano .env
+            if command -v nano &> /dev/null; then
+                nano .env
+            else
+                vi .env
+            fi
             ;;
         0)
             exit 0
@@ -165,6 +207,7 @@ show_menu() {
 
 # 如果带参数运行，则执行对应函数（方便自动化）
 if [ "$1" == "install" ]; then
+    install_base_tools
     install_docker
     configure_env
     start_services
