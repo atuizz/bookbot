@@ -41,6 +41,8 @@
    ```bash
    # 如果服务器已安装 git
    git clone https://github.com/atuizz/bookbot bookbot
+   # 如果是私有仓库，请使用 Token 方式：
+   # git clone https://<your_token>@github.com/atuizz/bookbot bookbot
    cd bookbot
    ```
 
