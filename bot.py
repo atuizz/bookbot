@@ -376,6 +376,11 @@ async def on_shutdown():
 async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
+    
+    # 自动删除可能存在的 Webhook，防止冲突
+    logger.info("Deleting webhook to enable polling mode...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
