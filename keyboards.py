@@ -4,61 +4,49 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 def get_search_keyboard(current_page: int, total_pages: int, book_ids: list) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     
-    # 1-10 Number buttons (rows of 3, 4, 3)
-    # Map indices 0-9 to book_ids
-    # If fewer than 10 books, only show available buttons or disable them
+    # Generate number buttons only for available books
+    # Layout: 5 buttons per row
+    for i, book_id in enumerate(book_ids):
+        # Display number is i + 1
+        builder.button(text=str(i + 1), callback_data=f"sel:{book_id}")
     
-    # Row 1: 1, 2, 3
-    for i in range(1, 4):
-        idx = i - 1
-        if idx < len(book_ids):
-            builder.button(text=str(i), callback_data=f"sel:{book_ids[idx]}")
-        else:
-            builder.button(text=" ", callback_data="noop")
-    
-    # Row 2: 4, 5, 6, 7
-    for i in range(4, 8):
-        idx = i - 1
-        if idx < len(book_ids):
-            builder.button(text=str(i), callback_data=f"sel:{book_ids[idx]}")
-        else:
-            builder.button(text=" ", callback_data="noop")
+    # Calculate how many rows of numbers we have
+    # We want rows of 5
+    num_books = len(book_ids)
+    rows_of_5 = num_books // 5
+    remainder = num_books % 5
+    layout = [5] * rows_of_5
+    if remainder > 0:
+        layout.append(remainder)
         
-    # Row 3: 8, 9, 10
-    for i in range(8, 11):
-        idx = i - 1
-        if idx < len(book_ids):
-            builder.button(text=str(i), callback_data=f"sel:{book_ids[idx]}")
-        else:
-            builder.button(text=" ", callback_data="noop")
-        
-    # Row 4: Navigation & Tools (5 buttons)
+    # Navigation Row
     # <<, Page, >>, Settings, Close
-    prev_page = max(0, current_page - 1)
-    next_page = min(total_pages - 1, current_page + 1)
     
     # Prev
     if current_page > 0:
+        prev_page = current_page - 1
         builder.button(text="<", callback_data=f"page:{prev_page}")
     else:
-        builder.button(text="·", callback_data="noop")
+        builder.button(text=" ", callback_data="noop") # Keep spacing
         
     # Page Indicator
     builder.button(text=f"{current_page + 1}/{total_pages}", callback_data="noop")
     
     # Next
     if current_page < total_pages - 1:
+        next_page = current_page + 1
         builder.button(text=">", callback_data=f"page:{next_page}")
     else:
-        builder.button(text="·", callback_data="noop")
-        
-    # Extra buttons to make it 5
-    builder.button(text="⚙️", callback_data="settings")
+        builder.button(text=" ", callback_data="noop") # Keep spacing
+
+    # Tools
+    # builder.button(text="⚙️", callback_data="settings")
     builder.button(text="❌", callback_data="close")
 
-    # Adjust layout
-    # 3, 4, 3, 5
-    builder.adjust(3, 4, 3, 5)
+    # Add navigation row layout (4 buttons: <, P/T, >, X)
+    layout.append(4)
+    
+    builder.adjust(*layout)
     
     return builder.as_markup()
 

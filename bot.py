@@ -365,6 +365,16 @@ async def on_noop(callback: CallbackQuery):
 async def on_startup():
     await db_service.connect()
     await meili_service.init_index()
+    
+    # Auto-detect bot username for deep linking
+    try:
+        me = await bot.get_me()
+        if me.username:
+            config.BOT_USERNAME = me.username
+            logger.info(f"Bot username detected: @{config.BOT_USERNAME}")
+    except Exception as e:
+        logger.error(f"Failed to get bot info: {e}")
+
     logger.info("Bot started")
 
 async def on_shutdown():
