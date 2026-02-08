@@ -147,11 +147,18 @@ start_services() {
 # 4. 更新代码
 update_code() {
     info "正在拉取最新代码..."
-    git pull
+    # 强制覆盖本地更改，确保与远程仓库一致
+    git fetch --all
+    git reset --hard origin/master
+    
     if [ $? -ne 0 ]; then
-        error "Git pull 失败，请检查网络或 Git 配置"
+        error "更新失败，请检查网络或 Git 配置"
         return
     fi
+    
+    # 重新赋予脚本执行权限（防止更新后丢失）
+    chmod +x deploy_vps.sh
+    
     info "正在重建并重启服务..."
     docker compose up -d --build
     info "✅ 更新完成！"
