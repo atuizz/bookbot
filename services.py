@@ -43,11 +43,16 @@ class MeilisearchService:
                 ],
                 'filterableAttributes': [
                     'tags',
-                    'author'
+                    'author',
+                    'ext',
+                    'file_size',
+                    'word_count',
+                    'content_rating'
                 ],
                 'sortableAttributes': [
                     'created_at',
-                    'downloads'
+                    'downloads',
+                    'file_size'
                 ],
                 'rankingRules': [
                     'words',
@@ -72,7 +77,14 @@ class MeilisearchService:
             err_type = type(e).__name__
             logger.error(f"Failed to configure Meilisearch [{err_type}]: {e}")
 
-    async def search(self, query: str, limit: int = 10, offset: int = 0, filter: Optional[str] = None) -> Dict[str, Any]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        filter: Optional[str] = None,
+        sort: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         loop = asyncio.get_running_loop()
         options = {
             'limit': limit,
@@ -81,6 +93,8 @@ class MeilisearchService:
         }
         if filter:
             options['filter'] = filter
+        if sort:
+            options["sort"] = sort
         return await loop.run_in_executor(None, lambda: self.index.search(query, options))
 
     async def add_documents(self, documents: List[Dict[str, Any]]):
@@ -160,13 +174,64 @@ class RedisService:
         self.supports_getdel = hasattr(self.redis, "getdel")
 
     async def cache_search_context(self, user_id: int, query: str, filter_type: str = None):
-        """Cache the last search query for a user to support pagination."""
-        data = json.dumps({'query': query, 'filter': filter_type})
-        await self.redis.set(f"search_ctx:{user_id}", data, ex=3600) # 1 hour expiry
+        data = json.dumps(
+            {
+                "query": query,
+                "filter": filter_type,
+                "page": 0,
+                "sort": "best",
+                "filters": {},
+            }
+        )
+        await self.redis.set(f"search_ctx:{user_id}", data, ex=3600)
 
     async def get_search_context(self, user_id: int) -> Optional[Dict[str, Any]]:
         data = await self.redis.get(f"search_ctx:{user_id}")
-        return json.loads(data) if data else None
+        if not data:
+            return None
+        ctx = json.loads(data)
+        if "page" not in ctx:
+            ctx["page"] = 0
+        if "sort" not in ctx:
+            ctx["sort"] = "best"
+        if "filters" not in ctx or ctx["filters"] is None:
+            ctx["filters"] = {}
+        return ctx
+
+    async def update_search_context(self, user_id: int, patch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        ctx = await self.get_search_context(user_id)
+        if not ctx:
+            return None
+        merged = {**ctx, **patch}
+        await self.redis.set(f"search_ctx:{user_id}", json.dumps(merged), ex=3600)
+        return merged
+
+    async def get_user_settings(self, user_id: int) -> Dict[str, Any]:
+        defaults = {
+            "content_rating": "ALL",
+            "search_button_mode": "preview",
+            "hide_personal_info": False,
+            "hide_upload_list": False,
+            "mute_upload_feedback": False,
+            "mute_invite_feedback": False,
+            "mute_feed": False,
+        }
+        data = await self.redis.get(f"user_settings:{user_id}")
+        if not data:
+            return defaults
+        try:
+            stored = json.loads(data)
+            if isinstance(stored, dict):
+                return {**defaults, **stored}
+        except Exception:
+            return defaults
+        return defaults
+
+    async def update_user_settings(self, user_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+        current = await self.get_user_settings(user_id)
+        merged = {**current, **patch}
+        await self.redis.set(f"user_settings:{user_id}", json.dumps(merged), ex=7776000)
+        return merged
 
     async def create_upload_session(self, file_data: Dict[str, Any]) -> str:
         """Store upload data temporarily and return a short ID."""

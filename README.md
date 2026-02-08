@@ -8,6 +8,8 @@
 - **极速响应**: 基于 Meilisearch 实现 50ms 内搜索返回。
 - **数据对齐**: 精心设计的 UI，确保在移动端完美对齐。
 - **极简体验**: 关键词直达，一键下载。
+- **筛选排序**: 支持格式/体积/字数/分级筛选与最热/最新/最大排序。
+- **设置菜单**: 内容分级与搜索按钮模式可配置，支持匿名上传与静默提示。
 
 ## 🛠 技术栈 (Technical Stack)
 
@@ -57,6 +59,23 @@
    - 3. 查看实时日志
    - 4. 停止服务
 
-## 📝 开发指南
+## 📁 项目结构 (Project Structure)
+
+- `bot.py`: 机器人主入口，包含路由和高层逻辑。
+- `services.py`: 封装所有外部服务交互（Meilisearch, PostgreSQL, Redis）。
+- `utils.py`: 纯函数工具类，处理字符串格式化等。
+- `keyboards.py`: Telegram 键盘 UI 组件工厂。
+- `config.py`: 配置管理（基于 pydantic-settings）。
+- `tests/`: 单元测试目录。
+
+## 🧪 运行测试 (Running Tests)
+
+项目包含单元测试，用于验证核心逻辑和工具函数。
+
+```bash
+python -m unittest discover tests
+```
+
+## � 开发指南
 
 详见 [RULES.md](RULES.md) 了解代码规范和贡献指南。

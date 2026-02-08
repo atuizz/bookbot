@@ -1,4 +1,5 @@
 import unicodedata
+import html
 from typing import List, Dict, Any
 
 def get_display_width(text: str) -> int:
@@ -29,61 +30,87 @@ def format_size(size_bytes: int) -> str:
     else:
         return f"{size_bytes/(1024*1024*1024):.1f}GB"
 
+def truncate_display(text: str, max_width: int) -> str:
+    if get_display_width(text) <= max_width:
+        return text
+    result = ""
+    width = 0
+    for ch in text:
+        w = 2 if unicodedata.east_asian_width(ch) in ("F", "W", "A") else 1
+        if width + w > max_width - 3:
+            break
+        result += ch
+        width += w
+    return result + "..."
+
+def format_word_count(word_count: int) -> str:
+    if word_count < 10000:
+        return f"{word_count}字"
+    if word_count < 100000000:
+        return f"{word_count/10000:.1f}万字"
+    return f"{word_count/100000000:.2f}亿字"
+
 def format_book_list_item(index: int, book: Dict[str, Any], bot_username: str = "bookbot") -> str:
     """Format a single book item for the list view."""
-    title = book.get('title') or book.get('file_name', 'Unknown')
-    file_name = book.get('file_name', '')
-    ext = file_name.split('.')[-1].upper() if '.' in file_name else 'FILE'
+    raw_title = book.get("title") or book.get("file_name", "Unknown")
+    title = truncate_display(str(raw_title), 30)
+    file_name = str(book.get("file_name", "") or "")
+    ext = (
+        str(book.get("ext") or "").upper()
+        or (file_name.split(".")[-1].upper() if "." in file_name else "FILE")
+    )
     size = format_size(book.get('file_size', 0))
     downloads = book.get('downloads', 0)
+    collections = book.get("collections", 0)
     
-    # Truncate title
-    display_len = get_display_width(title)
-    if display_len > 30:
-        # Simple truncation
-        title = title[:20] + "..." 
-    
-    # Using specific link to trigger start with book id, assuming deep linking is implemented
-    # Or just a visual link if not clickable for action
-    # Based on screenshot, it looks like a blue link. Let's make it a deep link to the bot itself.
-    # We will use the 'id' field which is the database primary key.
-    book_id = book.get('id')
-    
-    # Constructing the lines
-    # Line 1: 01. Title (Hyperlink)
-    # Line 2:    · EXT · SIZE · DLs
-    
-    # We use a dummy link or a deep link
-    # Deep link format: https://t.me/bookbot?start=id_123
-    # But for now, let's just make it bold or use a placeholder link if we don't have bot username
-    # The requirement says "Blue Link". In TG HTML, <a href="...">text</a> makes it blue.
-    # We can link to the bot's start param.
-    
+    word_count = (
+        book.get("word_count")
+        or book.get("wordCount")
+        or book.get("words")
+        or book.get("wordcount")
+    )
+    rating = book.get("rating") or book.get("score") or book.get("douban_score")
+
+    fields: list[str] = [ext, size]
+    if isinstance(word_count, (int, float)) and word_count > 0:
+        fields.append(format_word_count(int(word_count)))
+    if isinstance(rating, (int, float)) and rating > 0:
+        fields.append(f"{float(rating):.1f}")
+    if isinstance(collections, int) and isinstance(downloads, int):
+        fields.append(f"{collections}/{downloads}")
+    elif isinstance(downloads, int):
+        fields.append(f"{downloads}DL")
+
+    book_id = book.get("id")
+    safe_title = html.escape(title)
     if book_id is None:
-        line1 = f"{index:02d}. {title}"
+        line1 = f"{index:02d}. {safe_title}"
     else:
-        line1 = f"{index:02d}. <a href=\"https://t.me/{bot_username}?start=book_{book_id}\">{title}</a>"
-    line2 = f"   · {ext} · {size} · {downloads}DL"
+        line1 = f"{index:02d}. <a href=\"https://t.me/{bot_username}?start=book_{book_id}\">{safe_title}</a>"
+    line2 = "   · " + " · ".join(fields)
     
     return f"{line1}\n<code>{line2}</code>"
 
 def format_book_list(
     books: List[Dict[str, Any]],
+    query: str = "",
     start_index: int = 1,
     total_hits: int = 0,
     time_taken: float = 0.0,
     bot_username: str = "bookbot",
 ) -> str:
     """Format the entire list of books."""
-    header = f"🔍 搜索结果：第 {start_index}-{start_index+len(books)-1} 条，共 {total_hits}（用时 {time_taken:.2f} 秒）\n\n"
+    end_index = start_index + len(books) - 1
+    safe_query = html.escape(query or "")
+    header = f"🔍 搜书关键词: <code>{safe_query}</code> Results {start_index}-{end_index} of {total_hits}（用时 {time_taken:.2f} 秒）\n\n"
     items = [format_book_list_item(start_index + i, book, bot_username=bot_username) for i, book in enumerate(books)]
     footer = "\n\n💎 捐赠会员: 提升等级获得书币，等级权限翻倍，优先体验新功能"
     return header + "\n".join(items) + footer
 
 def format_book_detail(book: Dict[str, Any]) -> str:
     """Format book details for the detail view."""
-    title = book.get('title') or book.get('file_name')
-    author = book.get('author', 'Unknown')
+    title = html.escape(str(book.get("title") or book.get("file_name") or "Unknown"))
+    author = html.escape(str(book.get("author", "Unknown") or "Unknown"))
     size = format_size(book.get('file_size', 0))
     tags_list = book.get('tags', [])
     tags = " ".join([f"#{t}" for t in tags_list]) if tags_list else "#无标签"

@@ -2,7 +2,16 @@ import asyncio
 import logging
 import time
 import json
+import sys
 from typing import Optional, Union
+
+# Use uvloop on non-Windows systems for better performance
+if sys.platform != "win32":
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart, CommandObject
@@ -13,7 +22,14 @@ from aiogram.client.default import DefaultBotProperties
 from config import config
 from services import meili_service, db_service, redis_service
 from utils import format_book_list, format_book_detail, format_size
-from keyboards import get_search_keyboard, get_book_detail_keyboard, get_moderation_keyboard
+from keyboards import (
+    get_search_keyboard,
+    get_book_detail_keyboard,
+    get_moderation_keyboard,
+    get_filter_menu_keyboard,
+    get_settings_keyboard,
+    get_settings_menu_keyboard,
+)
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -25,46 +41,126 @@ dp = Dispatcher()
 
 # --- Helpers ---
 
+def render_settings_text(settings: dict) -> str:
+    rating_label = {
+        "ALL": "全部",
+        "G": "全年龄",
+        "R15": "R15",
+        "R18": "R18",
+    }.get(settings.get("content_rating", "ALL"), "全部")
+    mode_label = "预览模式" if settings.get("search_button_mode", "preview") == "preview" else "极速下载"
+
+    def yn(value: bool) -> str:
+        return "是" if value else "否"
+
+    lines = [
+        f"全局内容分级:{rating_label}",
+        f"搜索按钮模式:{mode_label}",
+        f"隐藏个人信息:{yn(bool(settings.get('hide_personal_info', False)))}",
+        f"隐藏上传列表:{yn(bool(settings.get('hide_upload_list', False)))}",
+        "",
+        f"关闭上传反馈消息:{yn(bool(settings.get('mute_upload_feedback', False)))}",
+        f"关闭邀请反馈消息:{yn(bool(settings.get('mute_invite_feedback', False)))}",
+        f"关闭书籍动态消息:{yn(bool(settings.get('mute_feed', False)))}",
+    ]
+    return "\n".join(lines)
+
 async def search_and_render(
     event: Union[Message, CallbackQuery], 
     query: str, 
     page: int = 0, 
     limit: int = 10, 
-    filter_type: str = None
+    filter_type: str = None,
+    keyboard_mode: str = "default",
+    sort: str = "best",
+    filters: dict | None = None,
 ):
     """
     Execute search and render results. 
     Handles both Message (new search) and CallbackQuery (pagination).
     """
     start_time = time.time()
-    
-    # Construct Meilisearch filter
-    meili_filter = None
-    if filter_type == 'tags':
-        # Meilisearch filter syntax: tags = "value" or tags IN ["value"]
-        # Assuming exact match for tag
-        meili_filter = f'tags = "{query}"'
+
+    if isinstance(event, Message):
+        chat_id = event.chat.id
+        ctx_key = event.from_user.id if event.from_user else chat_id
+        reply_method = event.answer
+    else:
+        chat_id = event.message.chat.id
+        ctx_key = event.from_user.id if event.from_user else chat_id
+        reply_method = event.message.edit_text
+
+    filters = filters or {}
+    if isinstance(event, Message):
+        user_settings = await redis_service.get_user_settings(ctx_key)
+        if user_settings.get("content_rating") and user_settings.get("content_rating") != "ALL":
+            filters.setdefault("rating", user_settings.get("content_rating"))
+
+    def to_filter_expr(filters_dict: dict) -> list[str]:
+        parts: list[str] = []
+        fmt = filters_dict.get("format")
+        if isinstance(fmt, str) and fmt and fmt != "ALL":
+            parts.append(f'ext = "{fmt}"')
+
+        rating = filters_dict.get("rating")
+        rating_map = {"G": 0, "R15": 1, "R18": 2}
+        if isinstance(rating, str) and rating in rating_map:
+            parts.append(f"content_rating <= {rating_map[rating]}")
+
+        size = filters_dict.get("size")
+        size_map = {
+            "<5MB": (None, 5 * 1024 * 1024),
+            "5-20MB": (5 * 1024 * 1024, 20 * 1024 * 1024),
+            "20-50MB": (20 * 1024 * 1024, 50 * 1024 * 1024),
+            ">50MB": (50 * 1024 * 1024, None),
+        }
+        if isinstance(size, str) and size in size_map:
+            lo, hi = size_map[size]
+            if lo is not None:
+                parts.append(f"file_size >= {lo}")
+            if hi is not None:
+                parts.append(f"file_size < {hi}")
+
+        words = filters_dict.get("words")
+        words_map = {
+            "<10万": (None, 100000),
+            "10-50万": (100000, 500000),
+            "50-100万": (500000, 1000000),
+            ">100万": (1000000, None),
+        }
+        if isinstance(words, str) and words in words_map:
+            lo, hi = words_map[words]
+            if lo is not None:
+                parts.append(f"word_count >= {lo}")
+            if hi is not None:
+                parts.append(f"word_count < {hi}")
+        return parts
+
+    meili_filter_parts: list[str] = []
+    if filter_type == "tags":
+        meili_filter_parts.append(f'tags = "{query}"')
+    meili_filter_parts.extend(to_filter_expr(filters))
+    meili_filter = " AND ".join(meili_filter_parts) if meili_filter_parts else None
+
+    meili_sort = None
+    if sort == "hot":
+        meili_sort = ["downloads:desc"]
+    elif sort == "new":
+        meili_sort = ["created_at:desc"]
+    elif sort == "big":
+        meili_sort = ["file_size:desc"]
     
     try:
         search_result = await meili_service.search(
             query, 
             limit=limit, 
             offset=page * limit, 
-            filter=meili_filter
+            filter=meili_filter,
+            sort=meili_sort,
         )
         hits = search_result.get('hits', [])
         total_hits = search_result.get('estimatedTotalHits', 0)
         time_taken = time.time() - start_time
-        
-        # Helper to get chat_id and send/edit
-        if isinstance(event, Message):
-            chat_id = event.chat.id
-            ctx_key = event.from_user.id if event.from_user else chat_id
-            reply_method = event.answer
-        else:
-            chat_id = event.message.chat.id
-            ctx_key = event.from_user.id if event.from_user else chat_id
-            reply_method = event.message.edit_text
 
         if not hits:
             text = "🔍 未找到相关书籍，请尝试更换关键词。"
@@ -82,15 +178,18 @@ async def search_and_render(
         
         text = format_book_list(
             hits,
+            query=query,
             start_index=page * limit + 1,
             total_hits=total_hits,
             time_taken=time_taken,
             bot_username=config.BOT_USERNAME,
         )
-        keyboard = get_search_keyboard(page, total_pages, book_ids)
+        keyboard = get_search_keyboard(page, total_pages, book_ids, mode=keyboard_mode, sort=sort, filters=filters)
         
-        # Cache context for pagination
-        await redis_service.cache_search_context(ctx_key, query, filter_type)
+        existing_ctx = await redis_service.get_search_context(ctx_key)
+        if not existing_ctx or existing_ctx.get("query") != query or existing_ctx.get("filter") != filter_type:
+            await redis_service.cache_search_context(ctx_key, query, filter_type)
+        await redis_service.update_search_context(ctx_key, {"page": page, "sort": sort, "filters": filters})
         
         await reply_method(text, reply_markup=keyboard, disable_web_page_preview=True)
         
@@ -202,6 +301,11 @@ async def handle_document(message: Message):
         'uploader_id': message.from_user.id,
         'username': message.from_user.username if message.from_user.username else "Unknown"
     }
+
+    uploader_settings = await redis_service.get_user_settings(message.from_user.id)
+    uploader_line = f"上传者: {message.from_user.full_name} ({message.from_user.id})"
+    if uploader_settings.get("hide_personal_info"):
+        uploader_line = "上传者: 匿名"
     
     if not config.ADMIN_IDS:
         await message.reply("⚠️ 系统未配置管理员，无法审核上传。")
@@ -216,14 +320,15 @@ async def handle_document(message: Message):
                 f"📝 <b>新文件待审核</b>\n"
                 f"文件名: {file_name}\n"
                 f"大小: {format_size(file_size)}\n"
-                f"上传者: {message.from_user.full_name} ({message.from_user.id})"
+                f"{uploader_line}"
             )
             kb = get_moderation_keyboard(short_id)
             await bot.send_message(admin_id, text, reply_markup=kb)
         except Exception as e:
             logger.error(f"Failed to notify admin {admin_id}: {e}")
 
-    await message.reply("✅ 文件已提交审核，感谢您的贡献！")
+    if not uploader_settings.get("mute_upload_feedback"):
+        await message.reply("✅ 文件已提交审核，感谢您的贡献！")
 
 # --- Callbacks ---
 
@@ -245,7 +350,158 @@ async def on_page_click(callback: CallbackQuery):
         callback, 
         ctx.get('query'), 
         page=page, 
-        filter_type=ctx.get('filter')
+        filter_type=ctx.get('filter'),
+        keyboard_mode="default",
+        sort=ctx.get("sort", "best"),
+        filters=ctx.get("filters", {}) or {},
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "pagesel")
+async def on_pagesel(callback: CallbackQuery):
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=ctx.get("page", 0),
+        filter_type=ctx.get("filter"),
+        keyboard_mode="page_picker",
+        sort=ctx.get("sort", "best"),
+        filters=ctx.get("filters", {}) or {},
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("jump:"))
+async def on_jump(callback: CallbackQuery):
+    _, _, page_str = callback.data.partition(":")
+    if not page_str.isdigit():
+        await callback.answer("无效的页码")
+        return
+    page = int(page_str)
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=page,
+        filter_type=ctx.get("filter"),
+        keyboard_mode="page_picker",
+        sort=ctx.get("sort", "best"),
+        filters=ctx.get("filters", {}) or {},
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "back:search")
+async def on_back_search(callback: CallbackQuery):
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=ctx.get("page", 0),
+        filter_type=ctx.get("filter"),
+        keyboard_mode="default",
+        sort=ctx.get("sort", "best"),
+        filters=ctx.get("filters", {}) or {},
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("sort:"))
+async def on_sort(callback: CallbackQuery):
+    _, _, sort_key = callback.data.partition(":")
+    if sort_key not in {"best", "hot", "new", "big"}:
+        await callback.answer("无效的排序")
+        return
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=0,
+        filter_type=ctx.get("filter"),
+        keyboard_mode="default",
+        sort=sort_key,
+        filters=ctx.get("filters", {}) or {},
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("fltmenu:"))
+async def on_filter_menu(callback: CallbackQuery):
+    _, _, key = callback.data.partition(":")
+    if key not in {"rating", "format", "size", "words"}:
+        await callback.answer("无效的筛选项")
+        return
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    kb = get_filter_menu_keyboard(key, selected=ctx.get("filters", {}) or {})
+    await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("flt:"))
+async def on_filter_set(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("无效的筛选")
+        return
+    _, key, value = parts
+    if key not in {"rating", "format", "size", "words"}:
+        await callback.answer("无效的筛选项")
+        return
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    ctx_filters = dict(ctx.get("filters", {}) or {})
+    ctx_filters[key] = value
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=0,
+        filter_type=ctx.get("filter"),
+        keyboard_mode="default",
+        sort=ctx.get("sort", "best"),
+        filters=ctx_filters,
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("fltclr:"))
+async def on_filter_clear(callback: CallbackQuery):
+    _, _, key = callback.data.partition(":")
+    if key not in {"rating", "format", "size", "words"}:
+        await callback.answer("无效的筛选项")
+        return
+    ctx_key = callback.from_user.id if callback.from_user else callback.message.chat.id
+    ctx = await redis_service.get_search_context(ctx_key)
+    if not ctx:
+        await callback.answer("⚠️ 搜索会话已过期，请重新搜索。", show_alert=True)
+        return
+    ctx_filters = dict(ctx.get("filters", {}) or {})
+    ctx_filters.pop(key, None)
+    await search_and_render(
+        callback,
+        ctx.get("query"),
+        page=0,
+        filter_type=ctx.get("filter"),
+        keyboard_mode="default",
+        sort=ctx.get("sort", "best"),
+        filters=ctx_filters,
     )
     await callback.answer()
 
@@ -256,7 +512,24 @@ async def on_select_book(callback: CallbackQuery):
         await callback.answer("无效的选择")
         return
     book_id = int(book_id_str)
-    
+
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    if settings.get("search_button_mode") == "download":
+        book = await db_service.get_book(book_id)
+        if not book:
+            await callback.answer("⚠️ 书籍不存在或已被删除")
+            return
+        book = dict(book)
+        try:
+            await bot.send_document(callback.message.chat.id, book["file_id"])
+            asyncio.create_task(db_service.increment_download(book_id))
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Send document failed: {e}")
+            await callback.answer("❌ 发送失败，文件可能已失效")
+        return
+
     await show_book_detail(callback.message.chat.id, book_id)
     await callback.answer()
 
@@ -301,16 +574,23 @@ async def on_approve(callback: CallbackQuery):
         return
         
     try:
-        # Generate title
         title = data['file_name'].rsplit('.', 1)[0]
         data['title'] = title
         data['author'] = "Unknown"
         
         book_id = await db_service.add_book(data)
         
-        # Add to Meili
-        data['id'] = book_id
-        await meili_service.add_documents([data])
+        book = await db_service.get_book(book_id)
+        if book:
+            meili_doc = dict(book)
+            file_name = str(meili_doc.get("file_name") or "")
+            meili_doc["ext"] = (file_name.split(".")[-1].upper() if "." in file_name else "FILE")
+            meili_doc["word_count"] = int(meili_doc.get("word_count") or 0) if "word_count" in meili_doc else 0
+            meili_doc["content_rating"] = int(meili_doc.get("content_rating") or 0) if "content_rating" in meili_doc else 0
+            created_at = meili_doc.get("created_at")
+            if created_at is not None and hasattr(created_at, "isoformat"):
+                meili_doc["created_at"] = created_at.isoformat()
+            await meili_service.add_documents([meili_doc])
         
         await callback.message.edit_text(f"✅ 已通过: {data['file_name']}")
         await callback.answer("审核通过")
@@ -340,7 +620,78 @@ async def on_reject(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "settings")
 async def on_settings(callback: CallbackQuery):
-    await callback.answer("设置功能暂未开放", show_alert=True)
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    text = render_settings_text(settings)
+    kb = get_settings_keyboard(settings)
+    await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == "back:settings")
+async def on_back_settings(callback: CallbackQuery):
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    text = render_settings_text(settings)
+    kb = get_settings_keyboard(settings)
+    await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("setmenu:"))
+async def on_settings_menu(callback: CallbackQuery):
+    _, _, key = callback.data.partition(":")
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    if key in {"content_rating", "search_button_mode"}:
+        kb = get_settings_menu_keyboard(key, settings)
+        await callback.message.edit_reply_markup(reply_markup=kb)
+        await callback.answer()
+        return
+    await callback.answer("该功能暂未开放", show_alert=True)
+
+@dp.callback_query(F.data.startswith("set:"))
+async def on_settings_toggle(callback: CallbackQuery):
+    _, _, key = callback.data.partition(":")
+    allowed = {
+        "hide_personal_info",
+        "hide_upload_list",
+        "mute_upload_feedback",
+        "mute_invite_feedback",
+        "mute_feed",
+    }
+    if key not in allowed:
+        await callback.answer("无效的设置项")
+        return
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    new_value = not bool(settings.get(key, False))
+    settings = await redis_service.update_user_settings(user_id, {key: new_value})
+    text = render_settings_text(settings)
+    kb = get_settings_keyboard(settings)
+    await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("setv:"))
+async def on_settings_set_value(callback: CallbackQuery):
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("无效的设置")
+        return
+    _, key, value = parts
+    if key == "content_rating" and value not in {"ALL", "G", "R15", "R18"}:
+        await callback.answer("无效的分级")
+        return
+    if key == "search_button_mode" and value not in {"preview", "download"}:
+        await callback.answer("无效的模式")
+        return
+    if key not in {"content_rating", "search_button_mode"}:
+        await callback.answer("无效的设置项")
+        return
+    user_id = callback.from_user.id if callback.from_user else callback.message.chat.id
+    settings = await redis_service.update_user_settings(user_id, {key: value})
+    text = render_settings_text(settings)
+    kb = get_settings_keyboard(settings)
+    await callback.message.edit_text(text, reply_markup=kb, disable_web_page_preview=True)
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("fav:"))
