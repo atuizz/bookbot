@@ -46,10 +46,14 @@ install_base_tools() {
 install_docker() {
     if ! command -v docker &> /dev/null; then
         info "正在安装 Docker..."
-        curl -fsSL https://get.docker.com | sh
-        systemctl enable docker
-        systemctl start docker
-        info "Docker 安装完成"
+        if curl -fsSL https://get.docker.com | sh; then
+            systemctl enable docker
+            systemctl start docker
+            info "Docker 安装完成"
+        else
+            error "Docker 自动安装失败，请尝试手动安装：curl -fsSL https://get.docker.com | sh"
+            exit 1
+        fi
     else
         info "Docker 已安装"
     fi
@@ -104,10 +108,15 @@ configure_env() {
         # 询问 Admin ID
         read -p "请输入管理员 Telegram ID (可选, 多个用逗号分隔): " ADMIN_IDS
         if [ ! -z "$ADMIN_IDS" ]; then
-             if ! grep -q "ADMIN_IDS=" .env; then
-                echo "ADMIN_IDS=" >> .env
+             # 清理输入：替换中文逗号，去除首尾空格，去除尾部逗号
+            ADMIN_IDS=$(echo "$ADMIN_IDS" | sed 's/，/,/g' | sed 's/^[ \t]*//;s/[ \t]*$//' | sed 's/,$//')
+            
+            if [ ! -z "$ADMIN_IDS" ]; then
+                if ! grep -q "ADMIN_IDS=" .env; then
+                    echo "ADMIN_IDS=" >> .env
+                fi
+                sed -i "s/ADMIN_IDS=.*/ADMIN_IDS=[$ADMIN_IDS]/" .env
             fi
-            sed -i "s/ADMIN_IDS=.*/ADMIN_IDS=[$ADMIN_IDS]/" .env
         fi
 
         info "配置文件 .env 已生成！"
@@ -118,6 +127,10 @@ configure_env() {
 
 # 3. 启动服务
 start_services() {
+    if ! command -v docker &> /dev/null; then
+        error "未找到 docker 命令。请先安装 Docker。"
+        exit 1
+    fi
     info "正在启动服务..."
     docker compose up -d --build
     if [ $? -eq 0 ]; then
