@@ -73,9 +73,11 @@
 项目包含单元测试，用于验证核心逻辑和工具函数。
 
 ```bash
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m unittest discover tests
 ```
 
-## � 开发指南
+## 🧑‍💻 开发指南
 
 详见 [RULES.md](RULES.md) 了解代码规范和贡献指南。

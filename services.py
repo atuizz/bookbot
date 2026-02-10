@@ -7,8 +7,6 @@ import redis.asyncio as redis
 from config import config
 from typing import List, Dict, Optional, Any
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MeilisearchService:
@@ -247,7 +245,7 @@ class RedisService:
         if self.supports_getdel:
             data = await self.redis.getdel(f"pending:{short_id}")
         else:
-            logger.info("Redis getdel not supported, falling back to pipeline get+delete.")
+            logger.debug("Redis getdel not supported, falling back to pipeline get+delete.")
             async with self.redis.pipeline() as pipe:
                 await pipe.get(f"pending:{short_id}")
                 await pipe.delete(f"pending:{short_id}")

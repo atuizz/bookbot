@@ -21,6 +21,12 @@ def pad_string(text: str, width: int) -> str:
 
 def format_size(size_bytes: int) -> str:
     """Format file size to human-readable string."""
+    try:
+        size_bytes = int(size_bytes)
+    except Exception:
+        size_bytes = 0
+    if size_bytes < 0:
+        size_bytes = 0
     if size_bytes < 1024:
         return f"{size_bytes}B"
     elif size_bytes < 1024 * 1024:
@@ -100,7 +106,11 @@ def format_book_list(
     bot_username: str = "bookbot",
 ) -> str:
     """Format the entire list of books."""
-    end_index = start_index + len(books) - 1
+    if books:
+        end_index = start_index + len(books) - 1
+    else:
+        start_index = 0
+        end_index = 0
     safe_query = html.escape(query or "")
     header = f"🔍 搜书关键词: <code>{safe_query}</code> Results {start_index}-{end_index} of {total_hits}（用时 {time_taken:.2f} 秒）\n\n"
     items = [format_book_list_item(start_index + i, book, bot_username=bot_username) for i, book in enumerate(books)]

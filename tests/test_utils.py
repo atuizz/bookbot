@@ -7,6 +7,8 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(format_size(1024), "1.0KB")
         self.assertEqual(format_size(1024 * 1024), "1.0MB")
         self.assertEqual(format_size(1024 * 1024 * 1024), "1.0GB")
+        self.assertEqual(format_size(None), "0B")
+        self.assertEqual(format_size(-1), "0B")
 
     def test_display_width_and_pad(self):
         text = "中文ABC"

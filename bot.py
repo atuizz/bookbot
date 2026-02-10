@@ -245,6 +245,7 @@ async def cmd_start(message: Message, command: CommandObject):
         "支持指令：\n"
         "/s <关键词> - 搜标题/作者\n"
         "/ss <关键词> - 搜标签\n"
+        "/settings - 设置\n"
         "/help - 查看帮助"
     )
 
@@ -258,6 +259,14 @@ async def cmd_help(message: Message):
         "- /ss <关键词>：搜索标签\n\n"
         "提示：列表标题链接可直接打开书籍详情。"
     )
+
+@dp.message(Command("settings"))
+async def cmd_settings(message: Message):
+    user_id = message.from_user.id if message.from_user else message.chat.id
+    settings = await redis_service.get_user_settings(user_id)
+    text = render_settings_text(settings)
+    kb = get_settings_keyboard(settings)
+    await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
 
 @dp.message(Command("s"))
 async def cmd_search_s(message: Message, command: CommandObject):
@@ -725,6 +734,19 @@ async def on_startup():
             logger.info(f"Bot username detected: @{config.BOT_USERNAME}")
     except Exception as e:
         logger.error(f"Failed to get bot info: {e}")
+
+    try:
+        await bot.set_my_commands(
+            [
+                types.BotCommand(command="s", description="搜标题/作者"),
+                types.BotCommand(command="ss", description="搜标签"),
+                types.BotCommand(command="settings", description="设置"),
+                types.BotCommand(command="help", description="帮助"),
+            ],
+            scope=types.BotCommandScopeDefault(),
+        )
+    except Exception as e:
+        logger.error(f"Failed to set bot commands: {e}")
 
     logger.info("Bot started")
 

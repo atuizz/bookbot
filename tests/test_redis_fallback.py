@@ -53,8 +53,13 @@ class TestRedisFallback(unittest.TestCase):
         # prepare data
         key = "pending:abcd1234"
         fake._last_key = key
-        asyncio.get_event_loop().run_until_complete(fake.set(key, '{"file_id":"x"}'))
-        result = asyncio.get_event_loop().run_until_complete(svc.get_and_delete_upload_session("abcd1234"))
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(fake.set(key, '{"file_id":"x"}'))
+            result = loop.run_until_complete(svc.get_and_delete_upload_session("abcd1234"))
+        finally:
+            loop.close()
         self.assertEqual(result["file_id"], "x")
 
 if __name__ == "__main__":
